@@ -47,6 +47,12 @@ jobs:
           cache: true
       - run: flutter pub get
       # No release signing key is configured. Keep this explicitly a debug APK.
+      - name: Install and check Vulkan shader compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslc
+          glslc --version
+          glslc -fshader-stage=compute --target-env=vulkan1.3 local_plugins/llama_flutter_android/android/src/main/cpp/llama.cpp/ggml/src/ggml-vulkan/vulkan-shaders/feature-tests/coopmat.comp -o "$RUNNER_TEMP/coopmat.spv"
       - run: flutter build apk --debug --target-platform android-arm64 --build-number "$GITHUB_RUN_NUMBER"
       - name: Package APK
         run: |

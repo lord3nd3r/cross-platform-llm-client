@@ -101,7 +101,7 @@ set(CMAKE_MAKE_PROGRAM \"${CMAKE_MAKE_PROGRAM}\" CACHE FILEPATH \"\")
 ")
     set(GGML_VULKAN_SHADERS_GEN_TOOLCHAIN "${_vk_host_tc}" CACHE FILEPATH "" FORCE)
 
-    # Shaders are compiled with the NDK's own glslc.
+    # Select a host shader compiler; the NDK copy is only a fallback.
     if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
         set(_ndk_host darwin-x86_64)
     elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
@@ -113,7 +113,7 @@ set(CMAKE_MAKE_PROGRAM \"${CMAKE_MAKE_PROGRAM}\" CACHE FILEPATH \"\")
     # shaders (cooperative matrix). Use a newer system glslc — e.g.
     # `brew install shaderc` — and only fall back to the NDK's.
     find_program(Vulkan_GLSLC_EXECUTABLE glslc
-        PATHS /opt/homebrew/bin /usr/local/bin ENV VULKAN_SDK
+        PATHS /opt/homebrew/bin /usr/local/bin /usr/bin ENV VULKAN_SDK
         PATH_SUFFIXES bin
         NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
     if(NOT Vulkan_GLSLC_EXECUTABLE)
