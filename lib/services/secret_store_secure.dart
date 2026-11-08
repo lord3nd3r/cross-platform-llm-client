@@ -18,6 +18,9 @@ class SecureSecretStore implements SecretStore {
               iOptions: IOSOptions(
                 accessibility: KeychainAccessibility.first_unlock_this_device,
               ),
+              // Standalone macOS builds do not share credentials with other
+              // apps and must work without a Keychain Sharing profile.
+              mOptions: MacOsOptions(useDataProtectionKeyChain: false),
             );
 
   final FlutterSecureStorage _storage;

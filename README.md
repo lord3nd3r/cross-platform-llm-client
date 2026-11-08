@@ -183,6 +183,23 @@ flutter pub get
 flutter build web --release
 ```
 
+### Downloadable Android and macOS previews
+
+The **Downloadable builds** GitHub Actions workflow runs analysis, tests, and
+the web build before producing an ARM64 debug APK and a macOS release app ZIP.
+Run it manually on a selected branch, or push a branch under `build/`.
+Download the packages and SHA-256 checksums from the completed run's artifacts.
+
+The APK uses a debug signing key and is a test build. It cannot upgrade an
+installation signed with a different key. The macOS app is not notarized;
+it currently supports cloud APIs, with local inference available on Android
+and iOS only. Building macOS requires a Mac with Xcode:
+
+```bash
+flutter pub get
+flutter build macos --release
+```
+
 ---
 
 Release APKs are signed with `android/key.properties` (see `android/key.properties.example`). Do not publish a debug-signed APK. Do not rotate that key between updates. This repo does not contain a keystore or Firebase `google-services.json`. Add those locally if you ship Crashlytics or Play/GitHub release builds.
