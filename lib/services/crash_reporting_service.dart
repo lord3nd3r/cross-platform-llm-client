@@ -19,9 +19,14 @@ import 'inference_service.dart';
 import 'local_image_service.dart';
 
 class CrashReportingService extends GetxService {
-  CrashReportingService({HiveService? hive}) : _hive = hive ?? Get.find<HiveService>();
+  CrashReportingService({
+    HiveService? hive,
+    Future<void> Function(bool enabled)? collectionControl,
+  })  : _hive = hive ?? Get.find<HiveService>(),
+        _collectionControl = collectionControl;
 
   final HiveService _hive;
+  final Future<void> Function(bool enabled)? _collectionControl;
   bool _enabled = false;
   bool _reporting = false;
   PackageInfo? _packageInfo;
@@ -32,25 +37,34 @@ class CrashReportingService extends GetxService {
   bool get optedIn =>
       _hive.getSetting<bool>(AppConstants.keyCrashReportsOptIn) ?? false;
 
-  /// Turns collection off in this process. Does not contact Firebase unless
-  /// it was already started.
-  void disable() {
-    _enabled = false;
+  Future<void> _setCollectionEnabled(bool enabled) async {
+    final control = _collectionControl;
+    if (control != null) {
+      await control(enabled);
+      return;
+    }
+    if (kIsWeb) return;
+    if (Firebase.apps.isEmpty) await Firebase.initializeApp();
+    await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(enabled);
   }
 
-  /// Collection stays off unless the user opted in. [enableCollection] is a
-  /// test seam; production initializes Firebase only after that opt-in, and
-  /// a missing google-services file leaves collection disabled.
-  Future<CrashReportingService> init({
-    Future<bool> Function()? enableCollection,
-  }) async {
-    if (!optedIn) {
-      _enabled = false;
-      return this;
-    }
+  /// Stops app reports immediately and persists the SDK opt-out as well.
+  Future<void> disable() async {
+    _enabled = false;
+    await _setCollectionEnabled(false);
+  }
+
+  /// Reapplies the saved policy, including revoking a persisted SDK override.
+  /// Missing Firebase configuration is normal in local builds.
+  Future<CrashReportingService> init() async {
     try {
-      if (enableCollection != null) {
-        _enabled = await enableCollection();
+      if (!optedIn) {
+        await disable();
+        return this;
+      }
+      if (_collectionControl != null) {
+        await _setCollectionEnabled(true);
+        _enabled = true;
       } else {
         if (Firebase.apps.isEmpty) {
           await Firebase.initializeApp();
@@ -59,7 +73,7 @@ class CrashReportingService extends GetxService {
         if (Platform.isAndroid) {
           _androidInfo = await DeviceInfoPlugin().androidInfo;
         }
-        await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(true);
+        await _setCollectionEnabled(true);
         _enabled = true;
         await updateContext(reason: 'startup');
         log('Crash reporting initialized');

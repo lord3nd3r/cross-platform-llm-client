@@ -81,6 +81,10 @@ dependency_overrides:
     path: local_plugins/llama_flutter_android
 
 flutter:
+  # Keep native dependencies on CocoaPods until the speech plugin's SwiftPM
+  # deployment target includes the macOS APIs it uses.
+  config:
+    enable-swift-package-manager: false
   uses-material-design: true
 
   assets:

@@ -17,7 +17,7 @@ _Generated on pixel 6 with 20 step_
 - **Local text on Android and iOS** — GGUF models through llama.cpp (Vulkan on Android, Metal on iOS) and, on Android, LiteRT-LM (`.litertlm`). Web and macOS do not run local text models.
 - **Local images on Android** — `.safetensors` image models through the bundled stable-diffusion plugin. Web has an experimental WebGPU path that is not part of the main navigation.
 - **Cloud APIs** — OpenAI, Anthropic, Gemini, Kimi, Stability, NVIDIA, OpenRouter, DeepSeek, and a custom OpenAI-compatible base URL. The default provider is OpenRouter.
-- **Chats stay on device** — Sessions live in Hive. API keys are kept in the platform keystore (Android) or keychain (iOS), not in Hive. Android backup of app data is disabled. On web, the browser store is not hardware-backed.
+- **Chats stay on device** — Sessions live in Hive. API keys are kept in the platform keystore (Android) or keychain (iOS/macOS), not in Hive. Android backup of app data is disabled. On web, the browser store is not hardware-backed.
 - **Local OpenAI server** — Android/iOS can serve the loaded model on loopback. Network mode requires an API key.
 - **Phone cluster** — An Android phone can spread a GGUF model across paired phones. Workers listen on the LAN only through a pairing gate; llama.cpp RPC itself stays on `127.0.0.1`. A computer running llama.cpp `rpc-server` can be added by address. That upstream server has no pairing secret, so only add a machine you started, on a network you trust.
 - **Android updates** — The app checks GitHub releases for `lord3nd3r/cross-platform-llm-client`. Those APKs must be signed with the same key as the installed build.
@@ -86,7 +86,9 @@ Idle detection (5s) and hard timeouts (180s) keep the UX responsive even on unde
 - **Google Gemini** — `generateContent` with inline image base64
 - **Kimi** — OpenAI-compatible endpoint from Moonshot AI
 
-API keys are stored in Hive and never transmitted anywhere except to the provider's endpoint.
+API keys are stored in the platform keystore or keychain on native devices,
+and in browser storage on web. Hive stores non-secret settings. Cloud requests
+send the selected provider's key to its endpoint.
 
 ### Cross-Platform Abstraction
 
@@ -107,7 +109,7 @@ The `InferenceService` exposes `supportsLocalInference` so the UI can hide local
 | Android  | Yes        | Yes          | Yes        | Yes            | minSdk 28. Phone workers and explicit `rpc-server` computers. |
 | iOS      | Yes        | No           | Yes        | No             | Can be a paired worker. Metal for GGUF. Sideload IPA. |
 | Web      | No         | Experimental WebGPU only | Yes | No | No local GGUF/LiteRT. API keys are browser storage. |
-| macOS project | No   | No           | Builds as a Flutter shell | No | Not a supported local-inference target. |
+| macOS preview | No   | No           | Yes | No | macOS 11+. Select Cloud mode in Settings; local inference is unavailable. |
 
 ### iOS / iPad (Installation via AltServer)
 The iOS/iPad release is distributed as a sideloadable IPA file. Due to the RAM requirements for local models, iPad is the recommended iOS target, but it can be installed on iPhones.
@@ -181,6 +183,23 @@ flutter build ios
 ```bash
 flutter pub get
 flutter build web --release
+```
+
+### Downloadable Android and macOS previews
+
+The **Downloadable builds** GitHub Actions workflow runs analysis, tests, and
+the web build before producing an ARM64 debug APK and a macOS release app ZIP.
+Run it manually on a selected branch, or push a branch under `build/`.
+Download the packages and SHA-256 checksums from the completed run's artifacts.
+
+The APK uses a debug signing key and is a test build. It cannot upgrade an
+installation signed with a different key. The macOS app is not notarized;
+it currently supports cloud APIs, with local inference available on Android
+and iOS only. Building macOS requires a Mac with Xcode:
+
+```bash
+flutter pub get
+flutter build macos --release
 ```
 
 ---

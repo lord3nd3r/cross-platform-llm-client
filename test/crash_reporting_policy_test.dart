@@ -23,28 +23,38 @@ void main() {
   });
 
   test('crash collection stays off unless the user opts in', () async {
-    var started = false;
-    final reporting = CrashReportingService();
-    await reporting.init(enableCollection: () async {
-      started = true;
-      return true;
+    final policies = <bool>[];
+    final reporting = CrashReportingService(collectionControl: (enabled) async {
+      policies.add(enabled);
     });
-    expect(started, isFalse);
+    await reporting.init();
     expect(reporting.isEnabled, isFalse);
+    expect(policies, [false]);
   });
 
   test('opting in is what allows collection to start', () async {
     final hive = Get.find<HiveService>();
     await hive.setSetting(AppConstants.keyCrashReportsOptIn, true);
-    var started = false;
-    final reporting = CrashReportingService();
-    await reporting.init(enableCollection: () async {
-      started = true;
-      return true;
+    final policies = <bool>[];
+    final reporting = CrashReportingService(collectionControl: (enabled) async {
+      policies.add(enabled);
     });
-    expect(started, isTrue);
+    await reporting.init();
     expect(reporting.isEnabled, isTrue);
-    reporting.disable();
+    await reporting.disable();
+    expect(reporting.isEnabled, isFalse);
+    expect(policies, [true, false]);
+  });
+
+  test('startup revokes an SDK opt-in left by an earlier launch', () async {
+    var sdkEnabled = true;
+    final reporting = CrashReportingService(collectionControl: (enabled) async {
+      sdkEnabled = enabled;
+    });
+
+    await reporting.init();
+
+    expect(sdkEnabled, isFalse);
     expect(reporting.isEnabled, isFalse);
   });
 }
