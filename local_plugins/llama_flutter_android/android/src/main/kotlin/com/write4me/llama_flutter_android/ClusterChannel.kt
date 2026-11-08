@@ -99,6 +99,7 @@ class ClusterChannel(
                     "bandwidth" to status.optDouble("bandwidth", 0.0),
                     "throttled" to (alive && status.optBoolean("throttled")),
                     "id" to ClusterWorkerService.workerId(context),
+                    "token" to status.optString("token").takeIf { it.isNotEmpty() },
                     "batteryUnrestricted" to isBatteryUnrestricted(),
                 ))
             }

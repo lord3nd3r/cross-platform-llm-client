@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import '../platform/fs.dart';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:flutter/material.dart';
@@ -17,7 +17,7 @@ import '../core/constants.dart';
 import '../core/ui.dart';
 import '../models/chat_message.dart';
 import '../models/chat_session.dart';
-import '../ffi/sd_ffi_bindings.dart';
+import '../ffi/sd_types.dart';
 import '../services/hive_service.dart';
 import '../services/inference_service.dart';
 import '../services/cloud_service.dart';
@@ -100,6 +100,23 @@ class ChatController extends GetxController {
   bool _scrollListenerAttached = false;
   int _generationSerial = 0;
   bool _batchCancelled = false;
+
+  /// Replaces the attachment read in tests so a chat switch can happen
+  /// while that read is in progress.
+  Future<Uint8List> Function(String path)? readFileBytesForTest;
+
+  Future<Uint8List> _readFileBytes(String path) {
+    final hook = readFileBytesForTest;
+    if (hook != null) return hook(path);
+    return File(path).readAsBytes();
+  }
+
+  void _storeMessage(ChatMessage message) {
+    _hive.saveMessage(message.id, message.toMap());
+    if (currentSessionId.value == message.chatId) {
+      messages.add(message);
+    }
+  }
 
   @override
   void onInit() {
@@ -206,11 +223,13 @@ class ChatController extends GetxController {
     final raw = _hive.getMessagesForChat(sessionId);
     messages.value = raw.map((m) => ChatMessage.fromMap(m)).toList()
       ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    final inference = Get.find<InferenceService>();
-    if (inference.isModelLoaded.value) {
-      inference.refreshContextInfo();
+    if (Get.isRegistered<InferenceService>()) {
+      final inference = Get.find<InferenceService>();
+      if (inference.isModelLoaded.value) {
+        inference.refreshContextInfo();
+      }
+      _resetInferenceContext();
     }
-    _resetInferenceContext();
     _scrollToBottom(force: true);
   }
 
@@ -591,24 +610,31 @@ class ChatController extends GetxController {
       createNewChat();
     }
 
-    // Mark busy before the first await (reading an attached image), so a
-    // double tap can't pass the guard above twice and send duplicates.
-    // Done after createNewChat(), which stops any in-flight generation.
+    // The send belongs to the chat that was open when the user tapped send.
+    // The image read below is the first await; switching chats during it
+    // must not file this attachment into the newly opened conversation.
+    final sessionId = currentSessionId.value;
+    final generationId = ++_generationSerial;
     isLoading.value = true;
 
-    // Encode image to base64 if it's not already pre-encoded, so the message
-    // saved in history contains the image bytes and is 100% stable.
     String? imgBase64 = imageBase64;
     if (imgBase64 == null && imagePath != null && !kIsWeb) {
       try {
-        imgBase64 = base64Encode(await File(imagePath).readAsBytes());
+        imgBase64 = base64Encode(await _readFileBytes(imagePath));
       } catch (_) {}
+    }
+    if (generationId != _generationSerial ||
+        currentSessionId.value != sessionId) {
+      if (generationId == _generationSerial) {
+        isLoading.value = false;
+      }
+      return;
     }
 
     // Add user message
     final userMsg = ChatMessage(
       id: _uuid.v4(),
-      chatId: currentSessionId.value,
+      chatId: sessionId,
       role: 'user',
       content: effectiveText,
       imageBase64: imgBase64, // Always save the encoded base64 string
@@ -619,8 +645,7 @@ class ChatController extends GetxController {
       fileType: fileType,
       fileSize: fileSize > 0 ? fileSize : null,
     );
-    messages.add(userMsg);
-    _hive.saveMessage(userMsg.id, userMsg.toMap());
+    _storeMessage(userMsg);
 
     // Clear input preview UI state — but KEEP the physical file on disk
     // because the native inference engine needs to read it during generation.
@@ -635,16 +660,14 @@ class ChatController extends GetxController {
       final title = visibleText.length > 40
           ? '${visibleText.substring(0, 40)}...'
           : visibleText;
-      final session =
-          sessions.firstWhere((s) => s.id == currentSessionId.value);
+      final session = sessions.firstWhere((s) => s.id == sessionId);
       final updated = session.copyWith(title: title, lastMessage: visibleText);
       _hive.saveSession(updated.id, updated.toMap());
       final idx = sessions.indexWhere((s) => s.id == updated.id);
       if (idx >= 0) sessions[idx] = updated;
     }
 
-    // Start generating
-    final generationId = ++_generationSerial;
+    // generationId was captured before the attachment read.
     isLoading.value = true;
     isStreaming.value = true;
     streamingAttachmentType.value =
@@ -855,7 +878,7 @@ class ChatController extends GetxController {
       // Display response directly (no command processing)
       final aiMsg = ChatMessage(
         id: _uuid.v4(),
-        chatId: currentSessionId.value,
+        chatId: sessionId,
         role: 'assistant',
         content: rawResponse,
         imageBase64: outImageBase64,
@@ -863,13 +886,11 @@ class ChatController extends GetxController {
         thoughtDurationSeconds: thoughtDurationSeconds,
         imageGenDurationMs: genDurationMs,
       );
-      messages.add(aiMsg);
-      _hive.saveMessage(aiMsg.id, aiMsg.toMap());
+      _storeMessage(aiMsg);
       imageGenStartTime.value = null;
 
       // Update session
-      final session =
-          sessions.firstWhereOrNull((s) => s.id == currentSessionId.value);
+      final session = sessions.firstWhereOrNull((s) => s.id == sessionId);
       if (session != null) {
         final updated = session.copyWith(lastMessage: aiMsg.content);
         _hive.saveSession(updated.id, updated.toMap());
@@ -891,12 +912,11 @@ class ChatController extends GetxController {
       Get.find<AppLogService>().error('Chat response failed', details: e);
       final errorMsg = ChatMessage(
         id: _uuid.v4(),
-        chatId: currentSessionId.value,
+        chatId: sessionId,
         role: 'assistant',
         content: '❌ Error: $e',
       );
-      messages.add(errorMsg);
-      _hive.saveMessage(errorMsg.id, errorMsg.toMap());
+      _storeMessage(errorMsg);
     }
 
     if (generationId == _generationSerial) {
@@ -920,16 +940,24 @@ class ChatController extends GetxController {
     isStreaming.value = false;
     streamingAttachmentType.value = null;
     streamingResponse.value = '';
-    Get.find<ImageGenerationNotificationService>().cancel();
+    if (Get.isRegistered<ImageGenerationNotificationService>()) {
+      Get.find<ImageGenerationNotificationService>().cancel();
+    }
     imageGenStep.value = 0;
     imageGenTotal.value = 0;
     imageGenEstimatedSecs.value = 0;
     imageGenStartTime.value = null;
     imageGenDecoding.value = false;
     _batchCancelled = true;
-    unawaited(Get.find<InferenceService>().stopGeneration());
-    Get.find<LocalImageService>().cancelGeneration();
-    Get.find<CloudService>().cancel();
+    if (Get.isRegistered<InferenceService>()) {
+      unawaited(Get.find<InferenceService>().stopGeneration());
+    }
+    if (Get.isRegistered<LocalImageService>()) {
+      Get.find<LocalImageService>().cancelGeneration();
+    }
+    if (Get.isRegistered<CloudService>()) {
+      Get.find<CloudService>().cancel();
+    }
   }
 
   void _saveAssistantMessage({

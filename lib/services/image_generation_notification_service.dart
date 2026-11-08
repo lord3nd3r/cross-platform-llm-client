@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import '../platform/fs.dart';
 import 'dart:ui';
 
 import 'package:flutter_background_service/flutter_background_service.dart';

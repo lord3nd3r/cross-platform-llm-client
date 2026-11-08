@@ -23,3 +23,18 @@ Future<String> downloadModel({
 void pauseDownload(String filename) {}
 
 Future<void> deleteModel(String path) async {}
+
+Future<Map<String, dynamic>?> startNativeDownload({
+  required String url,
+  required String filename,
+  required String modelsDir,
+}) async =>
+    null;
+
+Future<bool> cancelNativeDownload({
+  required int downloadId,
+  required String filename,
+}) async =>
+    false;
+
+Future<List<Map<String, dynamic>>> getActiveNativeDownloads() async => [];

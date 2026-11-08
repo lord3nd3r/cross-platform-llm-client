@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import '../platform/fs.dart';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -13,7 +13,7 @@ import '../controllers/home_controller.dart';
 import '../services/cluster_service.dart';
 import '../services/inference_service.dart';
 import '../services/local_image_service.dart';
-import '../ffi/sd_ffi_bindings.dart';
+import '../ffi/sd_types.dart';
 import '../utils/thought_parser.dart';
 import '../widgets/attachment_preview.dart';
 import '../widgets/chat_bubble.dart';

@@ -8,10 +8,12 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../core/constants.dart';
 import '../core/haptics.dart';
 import '../core/ui.dart';
+import '../services/credential_vault.dart';
+import '../services/crash_reporting_service.dart';
 import '../services/hive_service.dart';
 import '../services/app_log_service.dart';
 import '../services/local_image_service.dart';
-import '../ffi/sd_ffi_bindings.dart';
+import '../ffi/sd_types.dart';
 import 'package:sd_flutter_android/sd_flutter_android.dart';
 
 class SettingsController extends GetxController {
@@ -59,6 +61,7 @@ class SettingsController extends GetxController {
   final imageGenSize = AppConstants.defaultImageGenSize.obs;
   final fontScale = AppConstants.defaultFontScale.obs;
   final hapticsEnabled = true.obs;
+  final crashReports = false.obs;
   final appVersion = ''.obs;
 
   // Persistent text controllers for settings fields
@@ -146,21 +149,20 @@ class SettingsController extends GetxController {
     cloudProvider.value = _hive.getSetting(AppConstants.keyCloudProvider,
             defaultValue: 'openrouter') ??
         'openrouter';
-    openaiKey.value = _hive.getSetting(AppConstants.keyOpenaiKey) ?? '';
-    anthropicKey.value = _hive.getSetting(AppConstants.keyAnthropicKey) ?? '';
-    googleKey.value = _hive.getSetting(AppConstants.keyGoogleKey) ?? '';
-    kimiKey.value = _hive.getSetting(AppConstants.keyKimiKey) ?? '';
-    stabilityKey.value = _hive.getSetting(AppConstants.keyStabilityKey) ?? '';
-    nvidiaKey.value = _hive.getSetting(AppConstants.keyNvidiaKey) ?? '';
-    openRouterKey.value = _hive.getSetting(AppConstants.keyOpenRouterKey) ?? '';
-    deepSeekKey.value = _hive.getSetting(AppConstants.keyDeepSeekKey) ?? '';
+    openaiKey.value = _readSecret(AppConstants.keyOpenaiKey);
+    anthropicKey.value = _readSecret(AppConstants.keyAnthropicKey);
+    googleKey.value = _readSecret(AppConstants.keyGoogleKey);
+    kimiKey.value = _readSecret(AppConstants.keyKimiKey);
+    stabilityKey.value = _readSecret(AppConstants.keyStabilityKey);
+    nvidiaKey.value = _readSecret(AppConstants.keyNvidiaKey);
+    openRouterKey.value = _readSecret(AppConstants.keyOpenRouterKey);
+    deepSeekKey.value = _readSecret(AppConstants.keyDeepSeekKey);
     customCloudName.value = _hive.getSetting(AppConstants.keyCustomCloudName,
             defaultValue: 'Custom API') ??
         'Custom API';
     customCloudBaseUrl.value =
         _hive.getSetting(AppConstants.keyCustomCloudBaseUrl) ?? '';
-    customCloudKey.value =
-        _hive.getSetting(AppConstants.keyCustomCloudKey) ?? '';
+    customCloudKey.value = _readSecret(AppConstants.keyCustomCloudKey);
     openaiModel.value = _hive.getSetting(AppConstants.keyOpenaiModel,
             defaultValue: 'gpt-5.2') ??
         'gpt-5.2';
@@ -238,6 +240,8 @@ class SettingsController extends GetxController {
             AppConstants.keyHapticsEnabled,
             defaultValue: true) ??
         true;
+    crashReports.value =
+        _hive.getSetting<bool>(AppConstants.keyCrashReportsOptIn) ?? false;
     Haptics.enabled = hapticsEnabled.value;
 
     // Sync controllers with loaded values
@@ -350,54 +354,85 @@ class SettingsController extends GetxController {
     await _hive.setSetting(AppConstants.keyCloudProvider, provider);
   }
 
+  String _readSecret(String key) {
+    if (Get.isRegistered<CredentialVault>()) {
+      return Get.find<CredentialVault>().read(key);
+    }
+    return _hive.getSetting(key) ?? '';
+  }
+
+  Future<void> _writeSecret(String key, String value) async {
+    if (Get.isRegistered<CredentialVault>()) {
+      await Get.find<CredentialVault>().write(key, value);
+      return;
+    }
+    if (value.isEmpty && _hive.settingsBox.containsKey(key)) {
+      await _hive.settingsBox.delete(key);
+    } else {
+      await _hive.setSetting(key, value);
+    }
+  }
+
+  Future<void> setCrashReports(bool enabled) async {
+    crashReports.value = enabled;
+    await _hive.setSetting(AppConstants.keyCrashReportsOptIn, enabled);
+    if (!Get.isRegistered<CrashReportingService>()) return;
+    final reporting = Get.find<CrashReportingService>();
+    if (enabled) {
+      await reporting.init();
+    } else {
+      reporting.disable();
+    }
+  }
+
   Future<void> setApiKey(String provider, String key) async {
     final trimmed = key.trim();
     switch (provider) {
       case 'openai':
         openaiKey.value = trimmed;
         openaiKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyOpenaiKey, trimmed);
+        await _writeSecret(AppConstants.keyOpenaiKey, trimmed);
         break;
       case 'anthropic':
         anthropicKey.value = trimmed;
         anthropicKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyAnthropicKey, trimmed);
+        await _writeSecret(AppConstants.keyAnthropicKey, trimmed);
         break;
       case 'google':
         googleKey.value = trimmed;
         googleKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyGoogleKey, trimmed);
+        await _writeSecret(AppConstants.keyGoogleKey, trimmed);
         break;
       case 'kimi':
         kimiKey.value = trimmed;
         kimiKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyKimiKey, trimmed);
+        await _writeSecret(AppConstants.keyKimiKey, trimmed);
         break;
       case 'stability':
         stabilityKey.value = trimmed;
         stabilityKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyStabilityKey, trimmed);
+        await _writeSecret(AppConstants.keyStabilityKey, trimmed);
         break;
       case 'nvidia':
         nvidiaKey.value = trimmed;
         nvidiaKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyNvidiaKey, trimmed);
+        await _writeSecret(AppConstants.keyNvidiaKey, trimmed);
         await refreshNvidiaModels();
         break;
       case 'openrouter':
         openRouterKey.value = trimmed;
         openRouterKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyOpenRouterKey, trimmed);
+        await _writeSecret(AppConstants.keyOpenRouterKey, trimmed);
         break;
       case 'deepseek':
         deepSeekKey.value = trimmed;
         deepSeekKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyDeepSeekKey, trimmed);
+        await _writeSecret(AppConstants.keyDeepSeekKey, trimmed);
         break;
       case 'custom':
         customCloudKey.value = trimmed;
         customCloudKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyCustomCloudKey, trimmed);
+        await _writeSecret(AppConstants.keyCustomCloudKey, trimmed);
         break;
     }
   }
@@ -500,8 +535,7 @@ class SettingsController extends GetxController {
         AppConstants.keyCustomCloudName, customCloudName.value);
     await _hive.setSetting(
         AppConstants.keyCustomCloudBaseUrl, customCloudBaseUrl.value);
-    await _hive.setSetting(
-        AppConstants.keyCustomCloudKey, customCloudKey.value);
+    await _writeSecret(AppConstants.keyCustomCloudKey, customCloudKey.value);
     await _hive.setSetting(
         AppConstants.keyCustomCloudModel, customCloudModel.value);
     await _saveCustomCloudProfiles();
@@ -530,7 +564,7 @@ class SettingsController extends GetxController {
     await _hive.setSetting(
         AppConstants.keyCustomCloudName, customCloudName.value);
     await _hive.setSetting(AppConstants.keyCustomCloudBaseUrl, '');
-    await _hive.setSetting(AppConstants.keyCustomCloudKey, '');
+    await _writeSecret(AppConstants.keyCustomCloudKey, '');
     await _hive.setSetting(AppConstants.keyCustomCloudModel, '');
     customCloudProfileIndex.value = -1;
     await _saveCustomCloudProfiles();
@@ -564,8 +598,7 @@ class SettingsController extends GetxController {
         AppConstants.keyCustomCloudName, customCloudName.value);
     await _hive.setSetting(
         AppConstants.keyCustomCloudBaseUrl, customCloudBaseUrl.value);
-    await _hive.setSetting(
-        AppConstants.keyCustomCloudKey, customCloudKey.value);
+    await _writeSecret(AppConstants.keyCustomCloudKey, customCloudKey.value);
     await _hive.setSetting(
         AppConstants.keyCustomCloudModel, customCloudModel.value);
     await _hive.setSetting(AppConstants.keyCustomCloudProfileIndex, index);
@@ -574,9 +607,12 @@ class SettingsController extends GetxController {
   void _loadCustomCloudProfiles() {
     final raw = _hive.getSetting<List>(AppConstants.keyCustomCloudProfiles);
     if (raw != null) {
-      customCloudProfiles.assignAll(raw.whereType<Map>().map((profile) =>
-          profile.map((key, value) =>
-              MapEntry(key.toString(), value?.toString() ?? ''))));
+      var profiles = raw.whereType<Map>().map((profile) => profile.map(
+          (key, value) => MapEntry(key.toString(), value?.toString() ?? ''))).toList();
+      if (Get.isRegistered<CredentialVault>()) {
+        profiles = Get.find<CredentialVault>().profilesWithSecrets(profiles);
+      }
+      customCloudProfiles.assignAll(profiles);
     }
     if (customCloudProfiles.isEmpty && customCloudBaseUrl.value.isNotEmpty) {
       customCloudProfiles.add({
@@ -601,8 +637,14 @@ class SettingsController extends GetxController {
   }
 
   Future<void> _saveCustomCloudProfiles() async {
-    await _hive.setSetting(
-        AppConstants.keyCustomCloudProfiles, customCloudProfiles.toList());
+    if (Get.isRegistered<CredentialVault>()) {
+      final stored = await Get.find<CredentialVault>()
+          .persistProfiles(customCloudProfiles.toList());
+      customCloudProfiles.assignAll(stored);
+    } else {
+      await _hive.setSetting(
+          AppConstants.keyCustomCloudProfiles, customCloudProfiles.toList());
+    }
     await _hive.setSetting(
         AppConstants.keyCustomCloudProfileIndex, customCloudProfileIndex.value);
   }

@@ -1,8 +1,9 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+
+import 'local_file_image.dart';
 
 class AttachmentPreview extends StatelessWidget {
   final String fileName;
@@ -141,12 +142,7 @@ class AttachmentPreview extends StatelessWidget {
       );
     }
     if (imagePath != null && imagePath!.isNotEmpty) {
-      return Image.file(
-        File(imagePath!),
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-        errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined),
-      );
+      return localFileImage(imagePath!);
     }
     return null;
   }

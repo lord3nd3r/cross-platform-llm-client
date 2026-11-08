@@ -8,6 +8,7 @@ import 'package:get/get.dart';
 import '../core/constants.dart';
 import '../core/ui.dart';
 import '../services/app_log_service.dart';
+import '../services/credential_vault.dart';
 import '../services/hive_service.dart';
 import '../services/inference_service.dart';
 import '../services/cluster_service.dart';
@@ -40,7 +41,9 @@ class ServerController extends GetxController {
     super.onInit();
     useApiKey.value =
         _hive.getSetting<bool>(AppConstants.keyServerUseApiKey) ?? false;
-    apiKey.value = _hive.getSetting<String>(AppConstants.keyServerApiKey) ?? '';
+    apiKey.value = Get.isRegistered<CredentialVault>()
+        ? Get.find<CredentialVault>().read(AppConstants.keyServerApiKey)
+        : (_hive.getSetting<String>(AppConstants.keyServerApiKey) ?? '');
     allowNetwork.value =
         _hive.getSetting<bool>(AppConstants.keyServerAllowNetwork) ?? false;
 
@@ -124,7 +127,12 @@ class ServerController extends GetxController {
       _setApiKey(_newApiKey());
     }
     await _hive.setSetting(AppConstants.keyServerUseApiKey, useApiKey.value);
-    await _hive.setSetting(AppConstants.keyServerApiKey, apiKey.value.trim());
+    if (Get.isRegistered<CredentialVault>()) {
+      await Get.find<CredentialVault>()
+          .write(AppConstants.keyServerApiKey, apiKey.value.trim());
+    } else {
+      await _hive.setSetting(AppConstants.keyServerApiKey, apiKey.value.trim());
+    }
     await _hive.setSetting(
         AppConstants.keyServerAllowNetwork, allowNetwork.value);
     _server.updateApiKey(_effectiveApiKey);

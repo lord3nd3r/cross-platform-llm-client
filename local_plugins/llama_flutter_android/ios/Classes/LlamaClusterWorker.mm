@@ -31,11 +31,13 @@ static void clusterLog(ggml_log_level level, const char* text, void*) {
     if (std::strncmp(text, kConnected, sizeof(kConnected) - 1) == 0) {
         std::string peer(text + sizeof(kConnected) - 1);
         while (!peer.empty() && isspace((unsigned char)peer.back())) peer.pop_back();
+        // The pairing gate connects from loopback. Keep the address it recorded.
+        if (peer == "127.0.0.1" || peer == "::1" || peer == "0.0.0.0") return;
         std::lock_guard<std::mutex> lock(g_peer_mutex);
         g_peer = peer;
     } else if (std::strncmp(text, "RPC client disconnected", 23) == 0) {
         std::lock_guard<std::mutex> lock(g_peer_mutex);
-        g_peer.clear();
+        if (g_peer == "127.0.0.1" || g_peer == "::1") g_peer.clear();
     }
     if (level >= GGML_LOG_LEVEL_INFO && level != GGML_LOG_LEVEL_CONT) {
         NSLog(@"[ggml] %s", text);
@@ -78,10 +80,112 @@ static std::string currentPeer() {
     return g_peer;
 }
 
+static bool pairingHelloMatches(const uint8_t* hello, const uint8_t* token) {
+    uint8_t diff = 0;
+    static const uint8_t magic[4] = {'P', 'L', 'M', '1'};
+    for (int i = 0; i < 4; i++) diff |= hello[i] ^ magic[i];
+    for (int i = 0; i < 32; i++) diff |= hello[4 + i] ^ token[i];
+    return diff == 0;
+}
+
+static void copySocket(int from, int to) {
+    char buf[16384];
+    while (true) {
+        const ssize_t n = recv(from, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        ssize_t off = 0;
+        while (off < n) {
+            const ssize_t w = send(to, buf + off, (size_t)(n - off), 0);
+            if (w <= 0) return;
+            off += w;
+        }
+    }
+}
+
+static void servePairedClient(int client, int internalPort, std::vector<uint8_t> token) {
+    timeval tv{};
+    tv.tv_sec = 5;
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    uint8_t hello[36];
+    size_t got = 0;
+    while (got < sizeof(hello)) {
+        const ssize_t n = recv(client, hello + got, sizeof(hello) - got, 0);
+        if (n <= 0) {
+            close(client);
+            return;
+        }
+        got += (size_t)n;
+    }
+    if (!pairingHelloMatches(hello, token.data())) {
+        close(client);
+        return;
+    }
+    const int rpc = socket(AF_INET, SOCK_STREAM, 0);
+    if (rpc < 0) {
+        close(client);
+        return;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)internalPort);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (connect(rpc, (sockaddr*)&addr, sizeof(addr)) != 0) {
+        close(rpc);
+        close(client);
+        return;
+    }
+    const char ack[2] = {'O', 'K'};
+    if (send(client, ack, 2, 0) != 2) {
+        close(rpc);
+        close(client);
+        return;
+    }
+    sockaddr_in peer{};
+    socklen_t peerLen = sizeof(peer);
+    if (getpeername(client, (sockaddr*)&peer, &peerLen) == 0) {
+        char ip[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip));
+        std::lock_guard<std::mutex> lock(g_peer_mutex);
+        g_peer = ip;
+    }
+    std::thread([client, rpc] { copySocket(client, rpc); shutdown(rpc, SHUT_WR); }).detach();
+    copySocket(rpc, client);
+    close(rpc);
+    close(client);
+    std::lock_guard<std::mutex> lock(g_peer_mutex);
+    g_peer.clear();
+}
+
+static void runPairingGate(int publicPort, int internalPort, std::vector<uint8_t> token) {
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)publicPort);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, (sockaddr*)&addr, sizeof(addr)) != 0 || listen(fd, 16) != 0) {
+        close(fd);
+        return;
+    }
+    while (true) {
+        const int client = accept(fd, nullptr, nullptr);
+        if (client < 0) continue;
+        std::thread([client, internalPort, token] {
+            servePairedClient(client, internalPort, token);
+        }).detach();
+    }
+}
+
 @implementation LlamaClusterWorker
 
-+ (nullable NSString*)startOnPort:(int)port threads:(int)threads cacheDir:(NSString*)cacheDir {
++ (nullable NSString*)startOnPort:(int)port
+                          threads:(int)threads
+                         cacheDir:(NSString*)cacheDir
+                            token:(NSData*)token {
     if (g_running) return nil;
+    if (token.length != 32) return @"Pairing secret is missing";
     ggml_log_set(clusterLog, nullptr);
 
     // The GPU (Metal) does the work: on Apple silicon it reads memory far
@@ -93,7 +197,13 @@ static std::string currentPeer() {
 
     [[NSFileManager defaultManager] createDirectoryAtPath:cacheDir
                               withIntermediateDirectories:YES attributes:nil error:nil];
-    std::string endpoint = "0.0.0.0:" + std::to_string(port);
+    const int internalPort = port + 1;
+    std::vector<uint8_t> tokenBytes(32);
+    [token getBytes:tokenBytes.data() length:32];
+    std::thread([port, internalPort, tokenBytes] {
+        runPairingGate(port, internalPort, tokenBytes);
+    }).detach();
+    std::string endpoint = "127.0.0.1:" + std::to_string(internalPort);
     std::string cache = cacheDir.UTF8String;
     const size_t n_threads = (size_t)std::max(1, threads);
     LOGI(@"Worker on %s using %s, cache %s", endpoint.c_str(), ggml_backend_dev_name(dev), cache.c_str());

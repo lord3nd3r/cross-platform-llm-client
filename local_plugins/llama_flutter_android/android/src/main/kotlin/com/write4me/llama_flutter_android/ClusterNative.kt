@@ -29,6 +29,9 @@ object ClusterNative {
     /** Worker: the connected master's address, or null. */
     external fun nativeWorkerPeer(): String?
 
+    /** Records the master address seen by the pairing gate (not 127.0.0.1). */
+    external fun nativeSetWorkerPeer(ip: String?)
+
     /** Memory read speed in GB/s; ranks phones by how fast they generate. */
     external fun nativeMemBandwidth(threads: Int): Double
 

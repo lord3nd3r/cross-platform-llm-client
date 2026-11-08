@@ -1,4 +1,4 @@
-import 'dart:io' show Platform;
+import '../platform/fs.dart';
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -9,14 +9,19 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import '../controllers/chat_controller.dart';
 import '../controllers/settings_controller.dart';
+import '../core/constants.dart';
 import '../core/redact.dart';
-import '../ffi/sd_ffi_bindings.dart';
+import '../ffi/sd_types.dart';
+import 'hive_service.dart';
 import 'app_log_service.dart';
 import 'device_info_service.dart';
 import 'inference_service.dart';
 import 'local_image_service.dart';
 
 class CrashReportingService extends GetxService {
+  CrashReportingService({HiveService? hive}) : _hive = hive ?? Get.find<HiveService>();
+
+  final HiveService _hive;
   bool _enabled = false;
   bool _reporting = false;
   PackageInfo? _packageInfo;
@@ -24,25 +29,46 @@ class CrashReportingService extends GetxService {
 
   bool get isEnabled => _enabled;
 
-  Future<CrashReportingService> init() async {
+  bool get optedIn =>
+      _hive.getSetting<bool>(AppConstants.keyCrashReportsOptIn) ?? false;
+
+  /// Turns collection off in this process. Does not contact Firebase unless
+  /// it was already started.
+  void disable() {
+    _enabled = false;
+  }
+
+  /// Collection stays off unless the user opted in. [enableCollection] is a
+  /// test seam; production initializes Firebase only after that opt-in, and
+  /// a missing google-services file leaves collection disabled.
+  Future<CrashReportingService> init({
+    Future<bool> Function()? enableCollection,
+  }) async {
+    if (!optedIn) {
+      _enabled = false;
+      return this;
+    }
     try {
-      if (Firebase.apps.isEmpty) {
-        await Firebase.initializeApp();
+      if (enableCollection != null) {
+        _enabled = await enableCollection();
+      } else {
+        if (Firebase.apps.isEmpty) {
+          await Firebase.initializeApp();
+        }
+        _packageInfo = await PackageInfo.fromPlatform();
+        if (Platform.isAndroid) {
+          _androidInfo = await DeviceInfoPlugin().androidInfo;
+        }
+        await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(true);
+        _enabled = true;
+        await updateContext(reason: 'startup');
+        log('Crash reporting initialized');
       }
-      _packageInfo = await PackageInfo.fromPlatform();
-      if (Platform.isAndroid) {
-        _androidInfo = await DeviceInfoPlugin().androidInfo;
-      }
-      await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(true);
-      _enabled = true;
-      await updateContext(reason: 'startup');
-      log('Crash reporting initialized');
     } catch (e) {
       _enabled = false;
-      // Firebase config is intentionally allowed to be absent in local/dev builds.
-      // Once google-services.json is added, this starts reporting automatically.
+      // No Firebase config is a normal local build, not a startup failure.
       // ignore: avoid_print
-      print('[CrashReporting] Disabled: $e');
+      print('[CrashReporting] Not sending reports: $e');
     }
     return this;
   }

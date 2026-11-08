@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import '../platform/fs.dart';
 import 'dart:typed_data';
 
 /// Architecture details read from a GGUF file's header, used to estimate how

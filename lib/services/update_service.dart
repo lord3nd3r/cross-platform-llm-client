@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ffi' show Abi;
-import 'dart:io';
+import '../platform/abi_name.dart';
+import '../platform/fs.dart';
 
 import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:flutter/services.dart';
@@ -189,18 +189,7 @@ class UpdateService extends GetxService with WidgetsBindingObserver {
     );
   }
 
-  static String _abiTag() {
-    switch (Abi.current()) {
-      case Abi.androidArm64:
-        return 'arm64-v8a';
-      case Abi.androidArm:
-        return 'armeabi-v7a';
-      case Abi.androidX64:
-        return 'x86_64';
-      default:
-        return 'universal';
-    }
-  }
+  static String _abiTag() => abiTag();
 
   static String _normalize(String v) {
     var s = v.trim();

@@ -59,8 +59,10 @@ class AppConstants {
   static const String keyLastUpdatePrompt = 'last_update_prompt';
   static const String keySkippedUpdateVersion = 'skipped_update_version';
 
-  /// GitHub repository whose releases ship the Android APKs.
-  static const String githubRepo = 'orailnoor/cross-platform-llm-client';
+  /// GitHub repository whose releases ship this fork's Android APKs.
+  /// In-app updates must not offer orailnoor builds signed with another key.
+  static const String githubRepo = 'lord3nd3r/cross-platform-llm-client';
+  static const String keyCrashReportsOptIn = 'crash_reports_opt_in';
   static const String keyServerApiKey = 'server_api_key';
   static const String keyServerUseApiKey = 'server_use_api_key';
   static const String keyServerAllowNetwork = 'server_allow_network';

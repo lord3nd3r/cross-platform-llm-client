@@ -14,13 +14,15 @@ _Generated on pixel 6 with 20 step_
 
 ## What It Does
 
-- **Local Inference on Android** — Download and run GGUF models directly on your phone using GPU-accelerated inference (Vulkan). No internet required after download.
-- **Cloud API Fallback** — Seamlessly switch to OpenAI, Anthropic, Google Gemini, or Kimi (Moonshot AI) when you need more power or are on unsupported platforms.
-- **Multimodal Chat** — Send text and images in conversations. Vision support works with both local models (Qwen2-VL) and cloud providers.
-- **Persistent Sessions** — All chats and settings are stored locally via Hive. Nothing leaves your device unless you explicitly choose cloud mode.
-- **Background Services** — Firebase Cloud Messaging integration for push updates and background task handling.
-- **Smart Auto-Configuration** — On first launch, the app detects your device's RAM and recommends optimal context size and token limits automatically.
-- **Task Management (in development)** — A task view for structured, multi-step AI workflows is being built. It is not available in the app yet.
+- **Local text on Android and iOS** — GGUF models through llama.cpp (Vulkan on Android, Metal on iOS) and, on Android, LiteRT-LM (`.litertlm`). Web and macOS do not run local text models.
+- **Local images on Android** — `.safetensors` image models through the bundled stable-diffusion plugin. Web has an experimental WebGPU path that is not part of the main navigation.
+- **Cloud APIs** — OpenAI, Anthropic, Gemini, Kimi, Stability, NVIDIA, OpenRouter, DeepSeek, and a custom OpenAI-compatible base URL. The default provider is OpenRouter.
+- **Chats stay on device** — Sessions live in Hive. API keys are kept in the platform keystore (Android) or keychain (iOS), not in Hive. Android backup of app data is disabled. On web, the browser store is not hardware-backed.
+- **Local OpenAI server** — Android/iOS can serve the loaded model on loopback. Network mode requires an API key.
+- **Phone cluster** — An Android phone can spread a GGUF model across paired phones. Workers listen on the LAN only through a pairing gate; llama.cpp RPC itself stays on `127.0.0.1`. A computer running llama.cpp `rpc-server` can be added by address. That upstream server has no pairing secret, so only add a machine you started, on a network you trust.
+- **Android updates** — The app checks GitHub releases for `lord3nd3r/cross-platform-llm-client`. Those APKs must be signed with the same key as the installed build.
+- **Crash reports are off** until you turn them on in Settings. They are not sent when Firebase config is absent.
+- **Device automation is not a feature.** The old task planner that asked a model for ADB commands is removed. The app does not run shell commands.
 
 ---
 
@@ -45,7 +47,7 @@ _Generated on pixel 6 with 20 step_
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
 │                    Controllers (GetX)                        │
-│   ChatController · TaskController · ModelController         │
+│   ChatController · ModelController · SettingsController     │
 │   SettingsController · HomeController                       │
 └──────────────────────────┬──────────────────────────────────┘
                            │
@@ -100,11 +102,12 @@ The `InferenceService` exposes `supportsLocalInference` so the UI can hide local
 
 ## Supported Platforms
 
-| Platform | Local Inference | Cloud APIs | Notes                           |
-| -------- | --------------- | ---------- | ------------------------------- |
-| Android  | ✅ Yes          | ✅ Yes     | CPU offload via NEON; minSdk 28 |
-| iOS      | ✅ Yes          | ✅ Yes     | Metal GPU acceleration          |
-| Web      | ❌ No           | ✅ Yes     | Cloud-only (local coming soon)  |
+| Platform | Local text | Local images | Cloud APIs | Cluster master | Notes |
+| -------- | ---------- | ------------ | ---------- | -------------- | ----- |
+| Android  | Yes        | Yes          | Yes        | Yes            | minSdk 28. Phone workers and explicit `rpc-server` computers. |
+| iOS      | Yes        | No           | Yes        | No             | Can be a paired worker. Metal for GGUF. Sideload IPA. |
+| Web      | No         | Experimental WebGPU only | Yes | No | No local GGUF/LiteRT. API keys are browser storage. |
+| macOS project | No   | No           | Builds as a Flutter shell | No | Not a supported local-inference target. |
 
 ### iOS / iPad (Installation via AltServer)
 The iOS/iPad release is distributed as a sideloadable IPA file. Due to the RAM requirements for local models, iPad is the recommended iOS target, but it can be installed on iPhones.
@@ -134,10 +137,15 @@ Here is how you can install the app using AltStore and AltServer:
 
 ### Prerequisites
 
-- Flutter SDK >=3.3.0
-- Android SDK (API 26+)
-- JDK 17
-- NDK (bundled with Android SDK)
+- Flutter SDK >=3.3.0 (this tree was last migrated with stable `66dd93f9`)
+- Android SDK, JDK 17, and the NDK for Android builds
+- `minSdk` is 28
+- The stable-diffusion sources are a git submodule. Clone them before an Android image build:
+
+```bash
+git submodule update --init
+flutter pub get
+```
 
 ### Android
 
@@ -176,6 +184,10 @@ flutter build web --release
 ```
 
 ---
+
+Release APKs are signed with `android/key.properties` (see `android/key.properties.example`). Do not publish a debug-signed APK. Do not rotate that key between updates. This repo does not contain a keystore or Firebase `google-services.json`. Add those locally if you ship Crashlytics or Play/GitHub release builds.
+
+A Windows or desktop `rpc-server` is not authenticated by llama.cpp. PrivateLM will connect only to the address you type. It does not scan for open RPC ports. Keep that process off untrusted networks.
 
 ## License
 

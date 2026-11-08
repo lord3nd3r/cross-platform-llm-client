@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import '../platform/fs.dart';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';

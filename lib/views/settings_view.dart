@@ -9,8 +9,9 @@ import '../services/hive_service.dart';
 import '../services/local_image_service.dart';
 import '../services/update_service.dart';
 import '../services/device_info_service.dart';
-import '../services/device_info_native.dart' as platform_info;
-import '../ffi/sd_ffi_bindings.dart';
+import '../services/device_info_native.dart'
+    if (dart.library.html) '../services/device_info_web.dart' as platform_info;
+import '../ffi/sd_types.dart';
 import '../services/cluster_service.dart';
 import 'cluster_view.dart';
 import 'log_view.dart';
@@ -137,6 +138,18 @@ class SettingsView extends GetView<SettingsController> {
                 value: '${device.totalRamGB.value.toStringAsFixed(1)} GB RAM',
                 builder: (ctx) => AppGroup(children: [_buildDeviceCard(ctx)]),
                 reactive: false,
+              ),
+              AppRow(
+                icon: Icons.health_and_safety_outlined,
+                title: 'Crash reports',
+                subtitle:
+                    'Off unless you turn this on. Reports can include device and model details, never your API keys.',
+                trailing: Switch(
+                  value: controller.crashReports.value,
+                  onChanged: controller.setCrashReports,
+                ),
+                onTap: () =>
+                    controller.setCrashReports(!controller.crashReports.value),
               ),
               AppRow(
                 icon: Icons.article_outlined,

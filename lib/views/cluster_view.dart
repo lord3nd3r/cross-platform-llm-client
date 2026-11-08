@@ -219,7 +219,7 @@ class _ClusterViewState extends State<ClusterView> {
         AppGroup(dividerIndent: 60, children: [
           for (final w in cluster.workers)
             AppRow(
-              icon: Icons.smartphone_rounded,
+              icon: w.isComputer ? Icons.computer_rounded : Icons.smartphone_rounded,
               title: w.model ?? w.name,
               subtitle: [
                 w.endpoint,
@@ -236,8 +236,8 @@ class _ClusterViewState extends State<ClusterView> {
       const SectionFootnote(
         'Used the next time you load a GGUF model. If the model fits on this '
         'phone you can keep it here, which is faster. If it doesn\'t, the '
-        'fastest phones get the biggest share and phones that aren\'t needed '
-        'are left out.',
+        'fastest device gets the biggest share, including a Windows laptop '
+        'you added. Devices that aren\'t needed are left out.',
       ),
       const SectionHeader('Other ways to add'),
       Row(children: [
@@ -253,6 +253,17 @@ class _ClusterViewState extends State<ClusterView> {
           onPressed: () => _enterIp(context),
         ),
       ]),
+      const SizedBox(height: 10),
+      PillButton(
+        label: 'Add a computer',
+        icon: Icons.computer_rounded,
+        onPressed: () => _enterComputer(context),
+      ),
+      const SectionFootnote(
+        'A Windows laptop joins by running llama.cpp\'s rpc-server on your '
+        'Wi-Fi. It has no pairing code, so only add a computer you started. '
+        'Phones still pair with the QR code.',
+      ),
       if (cluster.found.isNotEmpty) ...[
         const SizedBox(height: 12),
         AppGroup(dividerIndent: 60, children: [
@@ -282,7 +293,7 @@ class _ClusterViewState extends State<ClusterView> {
     final input = await showAppSheet<String>(
       context,
       title: 'Enter worker IP',
-      subtitle: 'Shown under the worker\'s QR code',
+      subtitle: 'IP and the pairing code under the worker\'s QR code',
       builder: (ctx) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -291,7 +302,7 @@ class _ClusterViewState extends State<ClusterView> {
             autofocus: true,
             keyboardType: TextInputType.url,
             decoration: appInputDecoration(ctx,
-                hint: '192.168.1.20:${LlamaCluster.defaultPort}'),
+                hint: '192.168.1.20:${LlamaCluster.defaultPort} <code>'),
             onSubmitted: (v) => Navigator.pop(ctx, v),
           ),
           const SizedBox(height: 16),
@@ -301,6 +312,66 @@ class _ClusterViewState extends State<ClusterView> {
     );
     ctrl.dispose();
     if (input != null) await _report(cluster.addManual(input));
+  }
+
+  Future<void> _enterComputer(BuildContext context) async {
+    final address = TextEditingController();
+    final memory = TextEditingController(text: '16');
+    final input = await showAppSheet<String>(
+      context,
+      title: 'Add a Windows laptop',
+      subtitle: 'Same Wi-Fi as this phone. The laptop runs llama.cpp and '
+          'holds part of the model.',
+      builder: (ctx) {
+        final t = AppTokens.of(ctx);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'On the laptop, in the llama.cpp folder (RPC protocol 7):\n'
+              'rpc-server.exe -H 0.0.0.0 -p 50052 -c\n\n'
+              'Allow it if Windows Firewall asks. -H 0.0.0.0 is required; '
+              'the default listens only on the laptop itself. Then enter the '
+              'IPv4 address from ipconfig.',
+              style: t.caption,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: address,
+              autofocus: true,
+              keyboardType: TextInputType.url,
+              decoration: appInputDecoration(ctx, hint: '192.168.1.20:50052'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: memory,
+              keyboardType: TextInputType.number,
+              decoration: appInputDecoration(ctx, hint: 'Free memory in GB'),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Use the laptop\'s free memory. 16 is a normal laptop; use the '
+              'same number as your main machine if they match, so it takes a '
+              'real share of the model.',
+              style: t.caption,
+            ),
+            const SizedBox(height: 16),
+            PrimaryButton(
+              label: 'Add laptop',
+              onPressed: () => Navigator.pop(
+                ctx,
+                '${address.text.trim()} ${memory.text.trim()}',
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    address.dispose();
+    memory.dispose();
+    if (input != null && input.trim().isNotEmpty) {
+      await _report(cluster.addComputer(input));
+    }
   }
 
   Future<void> _report(Future<String?> adding) async {

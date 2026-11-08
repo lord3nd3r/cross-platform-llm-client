@@ -18,6 +18,13 @@ class ClusterWorker {
   /// The worker device's lasting ID: finds it again when its IP changes.
   final String? id;
 
+  /// Pairing secret from a PrivateLM worker's QR code. Never discovered over
+  /// mDNS and not written into Hive by [toMap].
+  final String? token;
+
+  /// `phone` (paired PrivateLM device) or `computer` (llama.cpp rpc-server).
+  final String kind;
+
   const ClusterWorker({
     required this.name,
     required this.host,
@@ -26,7 +33,14 @@ class ClusterWorker {
     this.bandwidth,
     this.model,
     this.id,
+    this.token,
+    this.kind = ClusterWorker.kindPhone,
   });
+
+  static const kindPhone = 'phone';
+  static const kindComputer = 'computer';
+
+  bool get isComputer => kind == kindComputer;
 
   String get endpoint => '$host:$port';
 
@@ -38,12 +52,35 @@ class ClusterWorker {
         bandwidth: (map['bandwidth'] as num?)?.toDouble(),
         model: map['model'] as String?,
         id: map['id'] as String?,
+        kind: map['kind'] as String? ?? ClusterWorker.kindPhone,
       );
 
-  /// The same device at a new address.
+  /// The same device at a new address. Keeps the pairing secret.
   ClusterWorker movedTo(String host, int port) => ClusterWorker(
-      name: name, host: host, port: port, ramMb: ramMb, bandwidth: bandwidth, model: model, id: id);
+      name: name,
+      host: host,
+      port: port,
+      ramMb: ramMb,
+      bandwidth: bandwidth,
+      model: model,
+      id: id,
+      token: token,
+      kind: kind);
 
+  ClusterWorker withToken(String? token) => ClusterWorker(
+        name: name,
+        host: host,
+        port: port,
+        ramMb: ramMb,
+        bandwidth: bandwidth,
+        model: model,
+        id: id,
+        token: token,
+        kind: kind,
+      );
+
+  /// Hive / discovery shape. The pairing token is intentionally absent.
+  /// [kind] is not a secret: it only selects the connection path.
   Map<String, dynamic> toMap() => {
         'name': name,
         'host': host,
@@ -52,6 +89,7 @@ class ClusterWorker {
         'bandwidth': bandwidth,
         'model': model,
         'id': id,
+        'kind': kind,
       };
 }
 
@@ -78,6 +116,9 @@ class ClusterWorkerStatus {
   /// This device's lasting worker ID (put in its QR code).
   final String? id;
 
+  /// This device's pairing secret, shown only in its own QR code.
+  final String? token;
+
   const ClusterWorkerStatus({
     required this.state,
     this.error,
@@ -88,6 +129,7 @@ class ClusterWorkerStatus {
     this.throttled = false,
     this.batteryUnrestricted = true,
     this.id,
+    this.token,
   });
 
   bool get running => state == 'running';
@@ -98,8 +140,9 @@ class ClusterWorkerStatus {
 /// spread across other phones (workers) on the same Wi-Fi, using llama.cpp's
 /// RPC backend. Android arm64 only.
 ///
-/// The RPC protocol has no authentication: only run workers on a network you
-/// trust.
+/// Workers listen on the LAN only through a pairing gate. llama.cpp RPC
+/// itself stays on 127.0.0.1. Masters must present the token from the
+/// worker's QR code before any RPC bytes are forwarded.
 class LlamaCluster {
   static const _channel = MethodChannel('llama_flutter_android/cluster');
   static const defaultPort = 50052;
@@ -123,6 +166,7 @@ class LlamaCluster {
       throttled: m['throttled'] as bool? ?? false,
       batteryUnrestricted: m['batteryUnrestricted'] as bool? ?? true,
       id: m['id'] as String?,
+      token: m['token'] as String?,
     );
   }
 

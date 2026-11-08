@@ -24,8 +24,11 @@ import 'services/device_info_service.dart';
 import 'services/local_image_service.dart';
 import 'services/app_log_service.dart';
 import 'services/crash_reporting_service.dart';
+import 'services/credential_vault.dart';
 import 'services/image_generation_notification_service.dart';
+import 'services/secret_store_secure.dart';
 import 'core/constants.dart';
+import 'core/startup.dart';
 
 void main() {
   final appLogBuffer = <String>[];
@@ -45,15 +48,6 @@ void main() {
 
     appLog.info('App started');
 
-    // Initialize Firebase before any Firebase-dependent services
-    try {
-      // await Firebase.initializeApp(
-      //   options: DefaultFirebaseOptions.currentPlatform,
-      // );
-    } catch (e) {
-      appLog.error('[Firebase] Initialization failed', details: e);
-    }
-
     // Support phones and tablets in portrait or landscape.
     if (!kIsWeb) {
       await SystemChrome.setPreferredOrientations([
@@ -63,17 +57,25 @@ void main() {
       ]);
     }
 
-    // Initialize Hive
+    // Initialize Hive. A timeout must not substitute an unopened HiveService.
     await Hive.initFlutter();
 
-    // Register global services
-    await Get.putAsync(() => HiveService().init().timeout(
-          const Duration(seconds: 10),
-          onTimeout: () {
-            appLog.error('HiveService.init timed out');
-            return HiveService();
-          },
-        ));
+    final HiveService hive;
+    try {
+      hive = await requireInit(
+        HiveService().init(),
+        timeout: const Duration(seconds: 10),
+        label: 'Storage',
+      );
+    } catch (e, stack) {
+      appLog.error('Storage failed to start', details: '$e\n$stack');
+      runApp(StartupFailureApp(detail: '$e'));
+      return;
+    }
+    Get.put(hive);
+    final vault = CredentialVault(hive, createPlatformSecretStore());
+    await vault.migrateAndLoad();
+    Get.put<CredentialVault>(vault);
     await Get.putAsync(() => DeviceInfoService().init().timeout(
           const Duration(seconds: 10),
           onTimeout: () {
@@ -215,6 +217,40 @@ void _autoConfigureForDevice() {
   Get.find<AppLogService>().info(
       '[AutoConfig] Set context=${device.recommendedContextSize}, '
       'maxTokens=${device.recommendedMaxTokens} for ${device.totalRamGB.value.toStringAsFixed(1)}GB RAM');
+}
+
+class StartupFailureApp extends StatelessWidget {
+  const StartupFailureApp({super.key, required this.detail});
+
+  final String detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      home: Scaffold(
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'PrivateLM could not open its local storage.',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Chats and settings were not loaded. Force-stop the app and open it again. If this keeps happening, free some storage and retry.',
+                ),
+                const SizedBox(height: 12),
+                Text(detail),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class PrivateLMApp extends StatelessWidget {

@@ -1,6 +1,6 @@
 // ignore_for_file: depend_on_referenced_packages
 import 'dart:convert';
-import 'dart:io';
+import '../platform/fs.dart';
 import 'package:archive/archive.dart';
 import 'package:xml/xml.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';

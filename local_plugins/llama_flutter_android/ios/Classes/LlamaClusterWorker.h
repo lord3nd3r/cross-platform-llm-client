@@ -10,11 +10,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// process to end, so once started it runs until the app closes.
 @interface LlamaClusterWorker : NSObject
 
-/// Starts serving on 0.0.0.0:`port` in a background thread. Returns nil on
-/// success, or why it couldn't start.
+/// Starts RPC on 127.0.0.1 only and a pairing gate on 0.0.0.0:`port`.
+/// [token] is 32 raw bytes. Returns nil on success, or why it couldn't start.
+/// A missing token does not open the public port.
 + (nullable NSString*)startOnPort:(int)port
                           threads:(int)threads
-                         cacheDir:(NSString*)cacheDir;
+                         cacheDir:(NSString*)cacheDir
+                            token:(NSData*)token;
 
 + (BOOL)isRunning;
 

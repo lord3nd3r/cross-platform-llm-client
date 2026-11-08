@@ -17,11 +17,15 @@ import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import org.json.JSONObject
+import android.util.Base64
 import java.io.File
+import java.net.InetSocketAddress
+import java.net.Socket
 
 /**
- * Runs this phone as a cluster worker: llama.cpp's RPC server over the CPU,
- * advertised on the local network for masters to find.
+ * Runs this phone as a cluster worker. llama.cpp RPC listens on loopback
+ * only. A pairing gate on the public port forwards traffic after the
+ * 32-byte token from this device's QR code matches.
  *
  * Lives in its own process (":cluster") because ggml's server loop can't be
  * stopped; stopping the worker ends the process. It reports its state to the
@@ -33,8 +37,11 @@ class ClusterWorkerService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     @Volatile private var running = false
+    @Volatile private var gatePeer: String? = null
+    private var gate: ClusterAuthGate? = null
     private var ramMb = 0L
     private var bandwidth = 0.0
+    private var pairingToken = ""
 
     companion object {
         private const val TAG = "ClusterWorker"
@@ -48,6 +55,19 @@ class ClusterWorkerService : Service() {
         private const val NOTIFICATION_ID = 2
 
         fun statusFile(context: Context) = File(context.filesDir, "cluster_worker_status.json")
+
+        /** Stable pairing secret. Not advertised on mDNS. */
+        @Synchronized
+        fun pairingToken(context: Context): String {
+            val file = File(context.filesDir, "cluster_worker_token")
+            file.takeIf { it.exists() }?.readText()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+            val raw = ClusterAuthGate.newToken()
+            val encoded = Base64.encodeToString(raw, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            file.writeText(encoded)
+            file.setReadable(false, false)
+            file.setReadable(true, true)
+            return encoded
+        }
 
         /**
          * This device's lasting worker ID, so a master can find it again when
@@ -102,18 +122,38 @@ class ClusterWorkerService : Service() {
             ramMb = availableRamMb(this)
             bandwidth = ClusterNative.nativeMemBandwidth(threads)
             Log.i(TAG, "Worker: $threads threads, ${ramMb} MB free, %.1f GB/s".format(bandwidth))
+            val tokenText = pairingToken(this)
+            pairingToken = tokenText
+            val token = Base64.decode(tokenText, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            val internalPort = port + 1
+            if (token.size != 32) {
+                writeStatus("error", error = "Pairing secret is invalid")
+                shutdown()
+                return@Thread
+            }
+            gate = ClusterAuthGate(port, internalPort, token) { peer ->
+                gatePeer = peer
+                ClusterNative.nativeSetWorkerPeer(peer)
+            }.also { it.start() }
+            Thread({
+                val error = ClusterNative.nativeServe(
+                    applicationInfo.nativeLibraryDir,
+                    "127.0.0.1:$internalPort",
+                    cacheDir.absolutePath,
+                    threads.toLong()
+                )
+                Log.e(TAG, "Worker exited: $error")
+                writeStatus("error", error = error ?: "Worker stopped")
+                shutdown()
+            }, "cluster-rpc").start()
+            if (!waitForLoopback(internalPort)) {
+                writeStatus("error", error = "Local RPC server did not start")
+                shutdown()
+                return@Thread
+            }
             advertise(port)
             writeStatus("running")
             startStatusLoop()
-            val error = ClusterNative.nativeServe(
-                applicationInfo.nativeLibraryDir,
-                "0.0.0.0:$port",
-                cacheDir.absolutePath,
-                threads.toLong()
-            )
-            Log.e(TAG, "Worker exited: $error")
-            writeStatus("error", error = error ?: "Worker stopped")
-            shutdown()
         }, "cluster-worker").start()
         return START_NOT_STICKY
     }
@@ -123,7 +163,9 @@ class ClusterWorkerService : Service() {
         Thread({
             var lastText = ""
             while (running) {
-                val peer = ClusterNative.nativeWorkerPeer()
+                val peer = gatePeer ?: ClusterNative.nativeWorkerPeer()?.takeUnless {
+                    it == "127.0.0.1" || it == "0.0.0.0"
+                }
                 val held = residentMb()
                 writeStatus("running", peer = peer, heldMb = held)
                 val text = if (peer != null) {
@@ -160,6 +202,7 @@ class ClusterWorkerService : Service() {
             .put("bandwidth", bandwidth)
             .put("heldMb", heldMb)
             .put("throttled", isThrottled())
+            .put("token", pairingToken)
         if (error != null) json.put("error", error)
         if (peer != null) json.put("peer", peer)
         statusFile(this).writeText(json.toString())
@@ -179,7 +222,7 @@ class ClusterWorkerService : Service() {
             setAttribute("ram", ramMb.toString())
             setAttribute("bw", "%.1f".format(java.util.Locale.US, bandwidth))
             setAttribute("model", Build.MODEL)
-            setAttribute("v", "rpc7")
+            setAttribute("v", "rpc8")
             setAttribute("id", workerId(this@ClusterWorkerService))
         }
         val listener = object : NsdManager.RegistrationListener {
@@ -212,8 +255,23 @@ class ClusterWorkerService : Service() {
         wifiLock = wifi.createWifiLock(mode, "PrivateLM:ClusterWorker").apply { acquire() }
     }
 
+    private fun waitForLoopback(port: Int): Boolean {
+        val deadline = System.currentTimeMillis() + 8000
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 200) }
+                return true
+            } catch (_: Exception) {
+                Thread.sleep(50)
+            }
+        }
+        return false
+    }
+
     private fun shutdown() {
         running = false
+        gate?.stop()
+        gate = null
         try {
             registration?.let { nsdManager?.unregisterService(it) }
         } catch (e: IllegalArgumentException) {

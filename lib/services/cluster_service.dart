@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io' show File, InternetAddressType, NetworkInterface, Platform;
 import 'dart:math' as math;
 
 import 'package:device_info_plus/device_info_plus.dart';
@@ -12,6 +11,9 @@ import 'package:llama_flutter_android/llama_flutter_android.dart';
 import '../core/constants.dart';
 import '../core/ui.dart';
 import 'app_log_service.dart';
+import 'cluster_auth.dart' if (dart.library.html) 'cluster_auth_web.dart';
+import 'cluster_host.dart';
+import 'credential_vault.dart';
 import 'hive_service.dart';
 
 /// What this phone does in a phone cluster.
@@ -47,20 +49,28 @@ class _Phone {
 class ClusterService extends GetxService {
   final HiveService _hive = Get.find<HiveService>();
 
-  static bool get isSupported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  static bool get isSupported => !kIsWeb && (hostIsAndroid || hostIsIOS);
 
   /// Running a model across workers is Android-only for now; iOS devices
   /// can be workers (their GPU serves a master's layers).
-  static bool get canBeMaster => !kIsWeb && Platform.isAndroid;
+  static bool get canBeMaster => !kIsWeb && hostIsAndroid;
 
   /// iOS can't stop the worker without closing the app.
-  static bool get workerStopsWithApp => !kIsWeb && Platform.isIOS;
+  static bool get workerStopsWithApp => !kIsWeb && hostIsIOS;
 
   /// QR codes a worker shows: privatelm://worker?host=…&port=…
   static const _qrScheme = 'privatelm';
 
   /// Speed assumed for workers paired before they reported one (GB/s).
   static const _unknownSpeed = 4.0;
+
+  /// A Windows/desktop rpc-server did not measure itself. Laptop DRAM is
+  /// usually at least this fast, so it is not left with a scrap of the model.
+  static const _computerSpeed = 16.0;
+
+  /// Used when the address is typed without a memory number: a normal
+  /// laptop, not a phone. Override it in the add-computer field.
+  static const _computerRamMb = 16 * 1024;
 
   /// Workers the master can use on its next GGUF load.
   final workers = <ClusterWorker>[].obs;
@@ -86,6 +96,9 @@ class ClusterService extends GetxService {
 
   String deviceName = '';
   double? _localSpeed;
+  final List<ClusterRelay> _relays = [];
+  final Map<String, String> _relayNames = {};
+  late final Future<void> _tokensReady;
   Timer? _statusTimer;
 
   ClusterRole get role => _workerRequested.value || worker.value.running
@@ -107,8 +120,9 @@ class ClusterService extends GetxService {
     enabled.value = _hive.getSetting<bool>(AppConstants.keyClusterEnabled) ?? false;
     final saved = _hive.getSetting<List>(AppConstants.keyClusterWorkers) ?? const [];
     workers.assignAll(saved.whereType<Map>().map(ClusterWorker.fromMap));
+    _tokensReady = _hydrateTokens();
     if (isSupported) {
-      if (Platform.isIOS) {
+      if (hostIsIOS) {
         DeviceInfoPlugin().iosInfo.then((info) => deviceName = info.modelName);
       } else {
         DeviceInfoPlugin().androidInfo.then((info) => deviceName = info.model);
@@ -162,10 +176,14 @@ class ClusterService extends GetxService {
   String? get workerQrData {
     final host = wifiAddress.value;
     final status = worker.value;
-    if (host == null || !status.running) return null;
+    final token = status.token;
+    if (host == null || !status.running || token == null || token.isEmpty) {
+      return null;
+    }
     return Uri(scheme: _qrScheme, host: 'worker', queryParameters: {
       'host': host,
       'port': '${LlamaCluster.defaultPort}',
+      'token': token,
       if (deviceName.isNotEmpty) 'name': deviceName,
       if (status.ramMb > 0) 'ram': '${status.ramMb}',
       if (status.bandwidth > 0) 'bw': status.bandwidth.toStringAsFixed(1),
@@ -174,7 +192,7 @@ class ClusterService extends GetxService {
   }
 
   Future<void> startWorker() async {
-    if (Platform.isAndroid) {
+    if (hostIsAndroid) {
       // Unrestricted battery keeps Android (Samsung especially) from moving
       // the worker to slow cores once it gets busy.
       final status = await LlamaCluster.workerStatus();
@@ -222,11 +240,7 @@ class ClusterService extends GetxService {
   /// iOS), if any.
   Future<void> refreshWifiAddress() async {
     try {
-      final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
-      final wifi = interfaces.where((i) => i.name.startsWith('wlan') || i.name == 'en0');
-      wifiAddress.value = wifi.isEmpty || wifi.first.addresses.isEmpty
-          ? null
-          : wifi.first.addresses.first.address;
+      wifiAddress.value = await hostWifiAddress();
     } catch (_) {
       wifiAddress.value = null;
     }
@@ -241,8 +255,13 @@ class ClusterService extends GetxService {
     final params = uri?.queryParameters ?? const {};
     final host = params['host'];
     final port = int.tryParse(params['port'] ?? '');
+    final token = params['token'];
     if (uri == null || uri.scheme != _qrScheme || host == null || port == null) {
       return 'That isn\'t a PrivateLM worker code';
+    }
+    if (ClusterAuth.decodeToken(token) == null) {
+      return 'That code has no pairing secret. Update PrivateLM on the worker '
+          'and scan the new code.';
     }
     return _add(ClusterWorker(
       name: params['name'] ?? host,
@@ -252,36 +271,107 @@ class ClusterService extends GetxService {
       bandwidth: double.tryParse(params['bw'] ?? ''),
       model: params['name'],
       id: params['id'],
+      token: token,
     ));
   }
 
-  /// Adds a worker by IP ("192.168.1.20" or "192.168.1.20:50052"). Returns
-  /// an error message, or null on success.
+  /// Adds a worker by IP and pairing code ("192.168.1.20:50052 <code>").
+  /// The code is the one under the worker's QR. An address alone is refused.
   Future<String?> addManual(String input) async {
     final text = input.trim();
-    if (text.isEmpty) return 'Enter the worker phone\'s IP address';
-    final host = text.contains(':') ? text.substring(0, text.lastIndexOf(':')) : text;
-    final port = text.contains(':')
-        ? int.tryParse(text.substring(text.lastIndexOf(':') + 1))
+    final parts = text.split(RegExp(r'\s+'));
+    if (parts.length < 2) {
+      return 'Enter the worker IP and its pairing code, from the worker screen.';
+    }
+    final address = parts.first;
+    final token = parts.sublist(1).join();
+    if (ClusterAuth.decodeToken(token) == null) {
+      return 'That pairing code is not valid.';
+    }
+    final host = address.contains(':')
+        ? address.substring(0, address.lastIndexOf(':'))
+        : address;
+    final port = address.contains(':')
+        ? int.tryParse(address.substring(address.lastIndexOf(':') + 1))
         : LlamaCluster.defaultPort;
-    if (host.isEmpty || port == null) return 'Use the form 192.168.1.20:50052';
-    return _add(ClusterWorker(name: host, host: host, port: port));
+    if (host.isEmpty || port == null) return 'Use the form 192.168.1.20:50052 <code>';
+    return _add(ClusterWorker(name: host, host: host, port: port, token: token));
   }
 
-  Future<String?> addFound(ClusterWorker w) => _add(w);
+  /// Adds a computer running llama.cpp's rpc-server.
+  ///
+  /// That server has no pairing secret, so this is an explicit address the
+  /// user typed, not something found on the network. PrivateLM phones are
+  /// never added this way. Optional second field is free memory in GB
+  /// (`192.168.1.10:50052 32`).
+  Future<String?> addComputer(String input) async {
+    final parts = input.trim().split(RegExp(r'\s+'));
+    if (parts.isEmpty || parts.first.isEmpty) {
+      return 'Enter the computer\'s address, for example 192.168.1.10:50052';
+    }
+    final address = parts.first;
+    final host = address.contains(':')
+        ? address.substring(0, address.lastIndexOf(':'))
+        : address;
+    final port = address.contains(':')
+        ? int.tryParse(address.substring(address.lastIndexOf(':') + 1))
+        : LlamaCluster.defaultPort;
+    if (host.isEmpty || port == null) {
+      return 'Use the form 192.168.1.10:50052';
+    }
+    int? ramMb;
+    if (parts.length >= 2) {
+      final gb = double.tryParse(parts[1]);
+      if (gb == null || gb <= 0 || gb > 1024) {
+        return 'Memory should be a number of gigabytes, such as 32';
+      }
+      ramMb = (gb * 1024).round();
+    }
+    return _add(ClusterWorker(
+      name: host,
+      host: host,
+      port: port,
+      // Blank memory means "a normal laptop", so it actually takes layers.
+      ramMb: ramMb ?? _computerRamMb,
+      kind: ClusterWorker.kindComputer,
+      model: 'Windows laptop',
+    ));
+  }
+
+  double _workerCapacityMb(ClusterWorker worker) {
+    final ram = worker.ramMb ?? (worker.isComputer ? _computerRamMb : 2000);
+    return ram * (worker.isComputer ? 0.8 : 0.75);
+  }
+
+  double _workerSpeed(ClusterWorker worker) =>
+      worker.bandwidth ?? (worker.isComputer ? _computerSpeed : _unknownSpeed);
+
+  /// Nearby discovery does not carry the pairing secret.
+  Future<String?> addFound(ClusterWorker w) async {
+    if (w.token == null || w.token!.isEmpty) {
+      return 'Scan that phone\'s QR code. Finding it on the network does not pair it.';
+    }
+    return _add(w);
+  }
 
   /// Finds saved workers that no longer answer at their address (they moved
   /// to another Wi-Fi, a hotspot, or got a new IP) by their device ID on
   /// the network, and updates them. Returns the ones still unreachable.
   Future<List<ClusterWorker>> relocateWorkers() async {
     final missing = <ClusterWorker>[];
+    final unreachable = <ClusterWorker>[];
     for (final w in workers) {
-      if (!await LlamaCluster.probe(w.endpoint)) missing.add(w);
+      if (w.isComputer) {
+        if (!await ClusterAuth.probeTcp(host: w.host, port: w.port)) {
+          unreachable.add(w);
+        }
+        continue;
+      }
+      if (!await _pairedProbe(w)) missing.add(w);
     }
-    if (missing.isEmpty) return const [];
+    if (missing.isEmpty) return unreachable;
     final seen = await LlamaCluster.discover();
     var moved = 0;
-    final unreachable = <ClusterWorker>[];
     for (final w in missing) {
       final match = seen.firstWhereOrNull((s) => w.id != null && s.id == w.id);
       final i = workers.indexWhere((x) => x.endpoint == w.endpoint);
@@ -299,10 +389,36 @@ class ClusterService extends GetxService {
     return unreachable;
   }
 
+  Future<bool> _pairedProbe(ClusterWorker worker) async {
+    final token = ClusterAuth.decodeToken(worker.token);
+    if (token == null) return false;
+    return ClusterAuth.probe(host: worker.host, port: worker.port, token: token);
+  }
+
+  Future<bool> _canReach(ClusterWorker worker) {
+    if (worker.isComputer) {
+      return ClusterAuth.probeTcp(host: worker.host, port: worker.port);
+    }
+    return _pairedProbe(worker);
+  }
+
   Future<String?> _add(ClusterWorker worker) async {
-    if (!await LlamaCluster.probe(worker.endpoint)) {
-      return 'Can\'t reach ${worker.endpoint}. Check that the phone is a worker '
-          'and on the same Wi-Fi.';
+    if (worker.isComputer) {
+      if (!await ClusterAuth.probeTcp(host: worker.host, port: worker.port)) {
+        return 'Can\'t reach ${worker.endpoint}. On the laptop run '
+            'rpc-server.exe -H 0.0.0.0 -p ${worker.port} -c, allow it through Windows '
+            'Firewall, and use the laptop\'s Wi-Fi IPv4 address.';
+      }
+    } else {
+      final token = ClusterAuth.decodeToken(worker.token);
+      if (token == null) {
+        return 'This phone has no pairing secret. Scan its QR code.';
+      }
+      if (!await ClusterAuth.probe(
+          host: worker.host, port: worker.port, token: token)) {
+        return 'Can\'t pair with ${worker.endpoint}. Check the code, that the phone '
+            'is a worker, and that both are on the same Wi-Fi.';
+      }
     }
     workers.removeWhere((w) => w.endpoint == worker.endpoint);
     workers.add(worker);
@@ -335,8 +451,36 @@ class ClusterService extends GetxService {
     await _hive.setSetting(AppConstants.keyClusterEnabled, value);
   }
 
-  Future<void> _save() => _hive.setSetting(
-      AppConstants.keyClusterWorkers, [for (final w in workers) w.toMap()]);
+  Future<void> _save() async {
+    await _hive.setSetting(
+        AppConstants.keyClusterWorkers, [for (final w in workers) w.toMap()]);
+    if (!Get.isRegistered<CredentialVault>()) return;
+    final vault = Get.find<CredentialVault>();
+    for (final w in workers) {
+      final id = w.id ?? w.endpoint;
+      await vault.write(CredentialVault.clusterTokenKey(id), w.token ?? '');
+    }
+  }
+
+  Future<void> _hydrateTokens() async {
+    if (!Get.isRegistered<CredentialVault>()) return;
+    final vault = Get.find<CredentialVault>();
+    final next = <ClusterWorker>[];
+    for (final w in workers) {
+      final id = w.id ?? w.endpoint;
+      final token = vault.read(CredentialVault.clusterTokenKey(id));
+      next.add(token.isEmpty ? w : w.withToken(token));
+    }
+    workers.assignAll(next);
+  }
+
+  Future<void> _closeRelays() async {
+    for (final relay in _relays) {
+      await relay.close();
+    }
+    _relays.clear();
+    _relayNames.clear();
+  }
 
   // ── Master: loading ────────────────────────────────────────────────────
 
@@ -353,6 +497,8 @@ class ClusterService extends GetxService {
   Future<int> applyForNextLoad(String modelPath, {String? modelName}) async {
     split.clear();
     if (!isSupported) return 0;
+    await _tokensReady;
+    await _closeRelays();
     if (!enabled.value || workers.isEmpty) {
       await LlamaCluster.clear();
       return 0;
@@ -360,14 +506,57 @@ class ClusterService extends GetxService {
 
     // Workers that are off or away are left out, not fatal: the model may
     // fit without them.
-    final offline = await relocateWorkers();
-    final available = workers.where((w) => !offline.any((o) => o.endpoint == w.endpoint)).toList();
+    final unpaired = workers
+        .where((w) => !w.isComputer && ClusterAuth.decodeToken(w.token) == null)
+        .toList();
+    if (unpaired.isNotEmpty) {
+      showToast(
+        'Phone cluster',
+        'Re-scan the QR code for: ${unpaired.map((w) => w.model ?? w.name).join(', ')}',
+      );
+    }
+    final candidates = workers.where((w) => w.isComputer || !unpaired.contains(w)).toList();
+    final offline = <ClusterWorker>[];
+    final movedOff = <ClusterWorker>[];
+    for (final w in candidates) {
+      if (!await _canReach(w)) {
+        if (w.isComputer) {
+          offline.add(w);
+        } else {
+          movedOff.add(w);
+        }
+      }
+    }
+    if (movedOff.isNotEmpty) {
+      final seen = await LlamaCluster.discover();
+      var moved = 0;
+      for (final w in movedOff) {
+        final match = seen.firstWhereOrNull((s) => w.id != null && s.id == w.id);
+        final i = workers.indexWhere((x) => x.endpoint == w.endpoint);
+        if (match == null || match.endpoint == w.endpoint || i < 0) {
+          offline.add(w);
+          continue;
+        }
+        workers[i] = w.movedTo(match.host, match.port);
+        moved++;
+      }
+      if (moved > 0) await _save();
+    }
+    final available = workers.where((w) {
+      if (unpaired.contains(w) || offline.any((o) => o.id == w.id && o.endpoint == w.endpoint)) {
+        return false;
+      }
+      if (w.isComputer) return !offline.any((o) => o.endpoint == w.endpoint);
+      return ClusterAuth.decodeToken(w.token) != null &&
+          !offline.any((o) => o.endpoint == w.endpoint);
+    }).toList();
     if (offline.isNotEmpty) {
       final names = offline.map((w) => w.model ?? w.name).join(', ');
       showToast('Phone cluster', 'Not reachable, loading without: $names');
     }
 
-    final modelMb = await File(modelPath).length() / (1024 * 1024);
+    await _tokensReady;
+    final modelMb = await hostFileLength(modelPath) / (1024 * 1024);
     final needMb = modelMb * 1.1; // + KV cache and working buffers
     _localSpeed ??= await LlamaCluster.benchmark();
     // Free RAM: workers report theirs when they start. The master also runs
@@ -375,8 +564,7 @@ class ClusterService extends GetxService {
     final master = _Phone(null, await LlamaCluster.localFreeRamMb() * 0.7, _localSpeed!);
     final phones = [
       master,
-      for (final w in available)
-        _Phone(w, (w.ramMb ?? 2000) * 0.75, w.bandwidth ?? _unknownSpeed),
+      for (final w in available) _Phone(w, _workerCapacityMb(w), _workerSpeed(w)),
     ];
     final totalMb = phones.fold<double>(0, (a, p) => a + p.capacityMb);
     if (needMb > totalMb) {
@@ -409,9 +597,36 @@ class ClusterService extends GetxService {
       return 0;
     }
     try {
+      final linked = <ClusterWorker>[];
+      final weights = <double>[];
+      for (final p in used) {
+        final worker = p.worker!;
+        if (worker.isComputer) {
+          _relayNames[worker.endpoint] = worker.model ?? worker.name;
+          linked.add(worker);
+          weights.add(p.assignedMb);
+          continue;
+        }
+        final token = ClusterAuth.decodeToken(worker.token);
+        if (token == null) continue;
+        final relay = await ClusterRelay.start(
+          host: worker.host,
+          port: worker.port,
+          token: token,
+        );
+        _relays.add(relay);
+        final local = worker.movedTo('127.0.0.1', relay.port);
+        _relayNames[local.endpoint] = worker.model ?? worker.name;
+        linked.add(local);
+        weights.add(p.assignedMb);
+      }
+      if (linked.isEmpty) {
+        await LlamaCluster.clear();
+        return 0;
+      }
       await LlamaCluster.setCluster(
-        [for (final p in used) p.worker!],
-        weights: [for (final p in used) p.assignedMb],
+        linked,
+        weights: weights,
         localWeight: master.assignedMb,
       );
     } on PlatformException catch (e) {
@@ -528,10 +743,12 @@ class ClusterService extends GetxService {
       final open = b.name.indexOf('[');
       if (open < 0) continue;
       final endpoint = b.name.substring(open + 1, b.name.lastIndexOf(']'));
-      final name = workers.firstWhereOrNull((w) => w.endpoint == endpoint)?.model ?? endpoint;
+      final named = _relayNames[endpoint] ??
+          workers.firstWhereOrNull((w) => w.endpoint == endpoint)?.model;
+      final name = named ?? endpoint;
       remote[name] = (remote[name] ?? 0) + b.mb;
     }
-    final fileMb = await File(modelPath).length() / (1024 * 1024);
+    final fileMb = await hostFileLength(modelPath) / (1024 * 1024);
     final remoteMb = remote.values.fold<double>(0, (a, b) => a + b);
     split.assignAll([
       ClusterShare(deviceName.isEmpty ? 'This phone' : deviceName,

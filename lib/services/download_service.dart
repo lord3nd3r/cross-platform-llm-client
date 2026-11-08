@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import '../platform/fs.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';

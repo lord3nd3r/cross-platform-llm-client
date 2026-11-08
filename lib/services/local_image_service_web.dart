@@ -5,8 +5,7 @@ import 'dart:typed_data';
 import 'package:get/get.dart';
 import 'package:web/web.dart' as web;
 import '../core/constants.dart';
-import '../ffi/sd_ffi_bindings.dart'
-    if (dart.library.html) '../ffi/sd_ffi_bindings_web.dart';
+import '../ffi/sd_types.dart';
 import 'hive_service.dart';
 
 // ── JS interop types for the WebGPU engine ──
@@ -39,6 +38,8 @@ class LocalImageService extends GetxService {
 
   final isModelLoaded = false.obs;
   final isLoadingModel = false.obs;
+  final loadingModelName = ''.obs;
+  String? lastFailureReason;
   final isGenerating = false.obs;
   final progress = 0.0.obs;
   final loadedModelName = ''.obs;

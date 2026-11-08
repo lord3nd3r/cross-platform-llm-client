@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import '../core/constants.dart';
+import 'credential_vault.dart';
 import 'hive_service.dart';
 import 'app_log_service.dart';
 
@@ -14,26 +15,33 @@ class CloudService extends GetxService {
       _hive.getSetting(AppConstants.keyCloudProvider, defaultValue: 'openrouter') ??
       'openrouter';
 
+  String _secret(String key) {
+    if (Get.isRegistered<CredentialVault>()) {
+      return Get.find<CredentialVault>().read(key);
+    }
+    return _hive.getSetting(key) ?? '';
+  }
+
   String get _apiKey {
     switch (_provider) {
       case 'anthropic':
-        return _hive.getSetting(AppConstants.keyAnthropicKey) ?? '';
+        return _secret(AppConstants.keyAnthropicKey);
       case 'google':
-        return _hive.getSetting(AppConstants.keyGoogleKey) ?? '';
+        return _secret(AppConstants.keyGoogleKey);
       case 'kimi':
-        return _hive.getSetting(AppConstants.keyKimiKey) ?? '';
+        return _secret(AppConstants.keyKimiKey);
       case 'stability':
-        return _hive.getSetting(AppConstants.keyStabilityKey) ?? '';
+        return _secret(AppConstants.keyStabilityKey);
       case 'nvidia':
-        return _hive.getSetting(AppConstants.keyNvidiaKey) ?? '';
+        return _secret(AppConstants.keyNvidiaKey);
       case 'openrouter':
-        return _hive.getSetting(AppConstants.keyOpenRouterKey) ?? '';
+        return _secret(AppConstants.keyOpenRouterKey);
       case 'deepseek':
-        return _hive.getSetting(AppConstants.keyDeepSeekKey) ?? '';
+        return _secret(AppConstants.keyDeepSeekKey);
       case 'custom':
-        return _hive.getSetting(AppConstants.keyCustomCloudKey) ?? '';
+        return _secret(AppConstants.keyCustomCloudKey);
       default:
-        return _hive.getSetting(AppConstants.keyOpenaiKey) ?? '';
+        return _secret(AppConstants.keyOpenaiKey);
     }
   }
 

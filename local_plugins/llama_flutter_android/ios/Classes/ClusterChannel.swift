@@ -1,6 +1,7 @@
 import Flutter
 import Foundation
 import Metal
+import Security
 import UIKit
 
 /// Phone cluster on iOS: this device can be a worker (its GPU serves a
@@ -46,6 +47,7 @@ final class ClusterChannel: NSObject, NetServiceDelegate {
                 "ramMb": ramMb,
                 "bandwidth": bandwidth,
                 "id": Self.workerId,
+                "token": Self.pairingTokenText,
             ]
             if let error = error { status["error"] = error }
             if running, let peer = LlamaClusterWorker.connectedPeer() { status["peer"] = peer }
@@ -93,7 +95,8 @@ final class ClusterChannel: NSObject, NetServiceDelegate {
                 + "/cluster_cache"
             let failure = LlamaClusterWorker.start(onPort: Int32(port),
                                                    threads: Int32(self.performanceCores()),
-                                                   cacheDir: cache)
+                                                   cacheDir: cache,
+                                                   token: Self.pairingTokenBytes)
             DispatchQueue.main.async {
                 if let failure = failure {
                     self.error = failure
@@ -113,7 +116,7 @@ final class ClusterChannel: NSObject, NetServiceDelegate {
             "ram": Data("\(ramMb)".utf8),
             "bw": Data(String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), bandwidth).utf8),
             "model": Data(UIDevice.current.model.utf8),
-            "v": Data("rpc7".utf8),
+            "v": Data("rpc8".utf8),
             "id": Data(Self.workerId.utf8),
         ]
         service.setTXTRecord(NetService.data(fromTXTRecord: txt))
@@ -131,6 +134,34 @@ final class ClusterChannel: NSObject, NetServiceDelegate {
         guard let gpu = MTLCreateSystemDefaultDevice() else { return appLimit }
         let gpuMb = Int(gpu.recommendedMaxWorkingSetSize / (1024 * 1024))
         return min(appLimit, gpuMb)
+    }
+
+    /// 32-byte pairing secret. Shown in the QR code, never in Bonjour.
+    static var pairingTokenBytes: Data {
+        let url = pairingTokenURL()
+        if let existing = try? Data(contentsOf: url), existing.count == 32 {
+            return existing
+        }
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let data = status == errSecSuccess ? Data(bytes) : Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                  withIntermediateDirectories: true)
+        try? data.write(to: url, options: [.completeFileProtection, .atomic])
+        return data
+    }
+
+    static var pairingTokenText: String {
+        var text = pairingTokenBytes.base64EncodedString()
+        text = text.replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return text
+    }
+
+    private static func pairingTokenURL() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("privatelm-cluster-token", isDirectory: false)
     }
 
     /// This device's lasting worker ID, so a master can find it again when

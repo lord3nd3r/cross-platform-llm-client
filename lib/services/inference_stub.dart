@@ -33,6 +33,7 @@ class InferenceEngine {
     String? modelRuntime,
     required int contextSize,
     required String deviceTier,
+    bool isTensorSoC = false,
     String liteRtPerformanceMode = 'cpu_safe',
     bool forceLiteRtCpu = true,
     bool clearLiteRtCache = false,
@@ -63,6 +64,7 @@ class InferenceEngine {
   }
 
   Future<void> stop() async {}
+  Future<void> resetConversation() async {}
   Future<dynamic> getContextInfo() async => null;
   Future<void> dispose() async {}
 }
