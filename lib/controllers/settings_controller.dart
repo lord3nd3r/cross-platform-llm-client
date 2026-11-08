@@ -381,7 +381,7 @@ class SettingsController extends GetxController {
     if (enabled) {
       await reporting.init();
     } else {
-      reporting.disable();
+      await reporting.disable();
     }
   }
 

@@ -68,6 +68,21 @@ class CredentialVault {
       }
     }
     await _migrateCustomProfiles();
+    // Worker records contain only identifiers; their tokens must be restored
+    // before ClusterService hydrates its in-memory worker list.
+    final workers =
+        _hive.getSetting<List>(AppConstants.keyClusterWorkers) ?? const [];
+    for (final worker in workers.whereType<Map>()) {
+      final id = worker['id'] as String? ??
+          '${worker['host']}:${worker['port']}';
+      final key = clusterTokenKey(id);
+      final token = await _secrets.read(key);
+      if (token != null && token.isNotEmpty) {
+        _cache[key] = token;
+      } else {
+        _cache.remove(key);
+      }
+    }
   }
 
   Future<void> _migrateCustomProfiles() async {

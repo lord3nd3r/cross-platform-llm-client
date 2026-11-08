@@ -120,6 +120,10 @@ static void servePairedClient(int client, int internalPort, std::vector<uint8_t>
         close(client);
         return;
     }
+    // The deadline is for authentication only. Model loading, computation,
+    // and time between requests can all leave an authenticated socket idle.
+    tv.tv_sec = 0;
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     const int rpc = socket(AF_INET, SOCK_STREAM, 0);
     if (rpc < 0) {
         close(client);

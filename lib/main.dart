@@ -58,14 +58,24 @@ void main() {
     }
 
     // Initialize Hive. A timeout must not substitute an unopened HiveService.
-    await Hive.initFlutter();
-
     final HiveService hive;
+    final CredentialVault vault;
     try {
+      await requireInit(
+        Hive.initFlutter(),
+        timeout: const Duration(seconds: 10),
+        label: 'Storage location',
+      );
       hive = await requireInit(
         HiveService().init(),
         timeout: const Duration(seconds: 10),
         label: 'Storage',
+      );
+      vault = CredentialVault(hive, createPlatformSecretStore());
+      await requireInit(
+        vault.migrateAndLoad(),
+        timeout: const Duration(seconds: 10),
+        label: 'Credential storage',
       );
     } catch (e, stack) {
       appLog.error('Storage failed to start', details: '$e\n$stack');
@@ -73,8 +83,6 @@ void main() {
       return;
     }
     Get.put(hive);
-    final vault = CredentialVault(hive, createPlatformSecretStore());
-    await vault.migrateAndLoad();
     Get.put<CredentialVault>(vault);
     await Get.putAsync(() => DeviceInfoService().init().timeout(
           const Duration(seconds: 10),
@@ -235,7 +243,7 @@ class StartupFailureApp extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'PrivateLM could not open its local storage.',
+                  'PrivateLM could not open its local storage or credentials.',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 12),

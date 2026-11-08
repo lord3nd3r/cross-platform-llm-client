@@ -66,4 +66,27 @@ void main() {
     expect(hive.settingsBox.containsKey(AppConstants.keyGoogleKey), isFalse);
     expect(vault.read(AppConstants.keyGoogleKey), 'ya29-test');
   });
+
+  test('cluster pairing tokens are restored into a new vault after restart',
+      () async {
+    await hive.setSetting(AppConstants.keyClusterWorkers, [
+      {'id': 'worker-1', 'host': '10.0.0.8', 'port': 50052},
+      {'host': '10.0.0.9', 'port': 50052},
+    ]);
+    final identifiedKey = CredentialVault.clusterTokenKey('worker-1');
+    final manualKey = CredentialVault.clusterTokenKey('10.0.0.9:50052');
+    await vault.write(identifiedKey, 'identified-secret');
+    await vault.write(manualKey, 'manual-secret');
+
+    final restarted = CredentialVault(hive, secrets);
+    await restarted.migrateAndLoad();
+
+    expect(restarted.read(identifiedKey), 'identified-secret');
+    expect(restarted.read(manualKey), 'manual-secret');
+    // Saving restored workers must preserve, rather than delete, their secrets.
+    await restarted.write(identifiedKey, restarted.read(identifiedKey));
+    expect(secrets.values[identifiedKey], 'identified-secret');
+    final records = hive.getSetting<List>(AppConstants.keyClusterWorkers)!;
+    expect(records.every((entry) => !(entry as Map).containsKey('token')), isTrue);
+  });
 }
